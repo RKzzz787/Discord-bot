@@ -1,0 +1,163 @@
+import os
+import random
+import discord
+import asyncio
+import requests
+from bs4 import BeautifulSoup
+from discord.ext import commands, tasks
+
+# CONFIGURACIÓN
+TOKEN = "MTM5NzM1ODA2MDMzODY3OTgzOA.G7VFH8.vHfZAVJqaGCFAKBes59eXW4q14252YFIOnVsao"
+CHANNEL_ID = 1133298777592176752
+
+# ARCHIVO DE FRASES
+FRASES_PATH = os.path.join(os.path.dirname(__file__), "frases.txt")
+if not os.path.exists(FRASES_PATH):
+    open(FRASES_PATH, "w", encoding="utf-8").close()
+
+# INTENTS Y BOT
+intents = discord.Intents.default()
+intents.message_content = True
+intents.messages = True
+intents.guilds = True
+
+bot = commands.Bot(command_prefix="!", intents=intents)
+
+
+# FUNCIONES
+def guardar_frase(frase):
+    try:
+        frase = frase.strip()
+        if frase == "":
+            return
+        with open(FRASES_PATH, "r", encoding="utf-8") as f:
+            existentes = set(line.strip() for line in f)
+        if frase not in existentes:
+            with open(FRASES_PATH, "a", encoding="utf-8") as f:
+                f.write(frase + "\n")
+            print("🧠 Aprendí:", frase)
+    except Exception as e:
+        print(f"❌ Error al guardar frase: {e}")
+
+def _get_all_unique_words():
+    """Lee todas las frases y devuelve una lista de todas las palabras únicas."""
+    all_words = []
+    try:
+        with open(FRASES_PATH, "r", encoding="utf-8") as f:
+            for line in f:
+                stripped_line = line.strip()
+                if stripped_line:
+                    # Dividir por espacios y añadir palabras a la lista
+                    all_words.extend(stripped_line.split())
+    except Exception as e:
+        print(f"❌ Error al leer palabras: {e}")
+    
+    # Devolver solo palabras únicas
+    return list(set(all_words))
+
+def elegir_frase():
+    """
+    Selecciona de 1 a 10 palabras aleatorias de todas las palabras aprendidas
+    y las une para formar una respuesta.
+    """
+    all_unique_words = _get_all_unique_words()
+
+    if not all_unique_words:
+        return None
+
+    # Determina cuántas palabras elegir (entre 1 y 10, o el total disponible si son menos de 10)
+    num_palabras_a_elegir = random.randint(1, min(7, len(all_unique_words)))
+
+    # Elige palabras aleatorias sin repetición en la misma respuesta
+    palabras_elegidas = random.sample(all_unique_words, num_palabras_a_elegir)
+
+    # Une las palabras elegidas en una sola cadena
+    return " ".join(palabras_elegidas)
+
+
+# EVENTOS
+@bot.event
+async def on_ready():
+    print(f"✅ Bot conectado como {bot.user}")
+    mensaje_cada_5_minutos.start()
+
+
+@bot.listen("on_message")
+async def on_message_listener(message):
+    if message.author.bot:
+        return
+
+    if not message.content or message.content.strip() == "":
+        return
+
+    guardar_frase(message.content)
+
+    # RESPONDER si lo mencionan o si responden a su mensaje
+    debe_responder = False
+
+    if bot.user in message.mentions:
+        debe_responder = True
+    elif message.reference:
+        try:
+            ref = await message.channel.fetch_message(message.reference.message_id)
+            if ref.author == bot.user:
+                debe_responder = True
+        except:
+            pass # Ignorar errores si el mensaje referenciado no se encuentra
+
+    if debe_responder:
+        respuesta = elegir_frase() # Ahora genera 1 a 10 palabras aleatorias
+        if respuesta and respuesta.strip() != "":
+            # Limpiar menciones de roles si aparecen en las palabras elegidas (aunque es poco probable)
+            respuesta = respuesta.replace("<@&", "").replace(">", "")
+            await message.channel.send(respuesta)
+        else:
+            await message.channel.send("Todavía no aprendí nada 😢")
+    
+    # Permite que los comandos también sean procesados
+    await bot.process_commands(message)
+
+# TAREA CADA 5 MINUTOS
+@tasks.loop(minutes=5)
+async def mensaje_cada_5_minutos():
+    canal = bot.get_channel(CHANNEL_ID)
+    if canal:
+        frase = elegir_frase() # Ahora genera 1 a 10 palabras aleatorias
+        await canal.send(frase if frase else "No tengo nada que decir todavía �")
+    else:
+        print(f"❌ No se encontró el canal con ID {CHANNEL_ID}")
+
+
+# COMANDO PARA APRENDER DE UNA URL
+@bot.command(name='aprender_de_url')
+async def aprender_de_url(ctx, url: str):
+    await ctx.send(f"🔍 Intentando aprender de: {url}")
+    try:
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
+        soup = BeautifulSoup(response.text, "html.parser")
+
+        for tag in soup(["script", "style"]):
+            tag.decompose()
+
+        texto = soup.get_text()
+        nuevas = 0
+        for linea in texto.splitlines():
+            linea = linea.strip()
+            if len(linea) > 5: # Solo guardar líneas con más de 5 caracteres como frases
+                guardar_frase(linea)
+                nuevas += 1
+
+        if nuevas > 0:
+            await ctx.send(f"✅ ¡Aprendí {nuevas} frases nuevas de {url}!")
+        else:
+            await ctx.send("😕 No encontré nada útil en ese sitio.")
+    except Exception as e:
+        await ctx.send(f"❌ Error al aprender: {e}")
+
+
+# EJECUCIÓN
+if TOKEN:
+    bot.run(TOKEN)
+else:
+    print("❌ DISCORD_TOKEN no está configurado.")
